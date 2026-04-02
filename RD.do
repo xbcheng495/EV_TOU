@@ -4,7 +4,7 @@ set scheme s1color
 
 * --- 1. 数据导入与预处理 ---
 
-import delimited "D:\1-研究数据\EV充电\transition_data_selective_filtered.csv", clear
+import delimited "D:\transition_data_selective_filtered.csv", clear
 
 * 强制转换为数值
 destring total_ele_amount_per_min relative_minute transition_type, replace force
