@@ -1,20 +1,39 @@
-* ==========================================
-* 模块化实证：湖北省 (2024-05 政策变更)
-* ==========================================
+* ==============================================================================
+* 电动汽车充电行为 TOU 政策评估实证代码整合版 (湖北 & 四川)
+* 终极修复版：修正文本竖排参数 (orientation(vertical)) + 国际标准术语
+* ==============================================================================
 clear all
+set more off
+
+disp ">>> 正在读取原始 CSV 数据，请稍候..."
 import delimited "D:\Data_cxb\电动汽车充电订单数据\did_panel_station_hourly.csv", clear
 
-* ------------------------------------------
-* 步骤 1: 设定靶点省份和时间窗口
-* ------------------------------------------
+encode charstation_name, gen(station_id)
+gen date_num = date(date, "YMD")
+egen station_hour_fe = group(station_id hour)
+egen date_hour_fe = group(date_num hour)
+
+* 统一准备 X 轴刻度宏 (0 到 23，并额外增加 24 点闭环)
+local xlab_str ""
+forvalues i = 0/23 {
+    local label_id = `i' + 1
+    local xlab_str "`xlab_str' `label_id' "`i'" "
+}
+local xlab_str "`xlab_str' 25 `"24"'"
+
+tempfile fulldata
+save `fulldata', replace
+
+* ==============================================================================
+* 模块一：湖北省 (2024-05 政策变更)
+* ==============================================================================
+disp ">>> 开始处理湖北省数据..."
+use `fulldata', clear
+
 local target_prov "湖北省"
 local event_month "2024-05"
 local window_start "2024-03"  
 local window_end   "2024-06"  
-
-* ------------------------------------------
-* 步骤 2: 构建 Treated + Never-Treated 样本
-* ------------------------------------------
 local control_pool "江苏省 上海市 广东省 山东省 河北省 天津市 山西省 海南省 陕西省 甘肃省 青海省 宁夏回族自治区 新疆维吾尔自治区 西藏自治区 辽宁省 吉林省 黑龙江省 内蒙古自治区 重庆市"
 
 gen to_keep = 0
@@ -23,147 +42,202 @@ foreach p of local control_pool {
     replace to_keep = 1 if province == "`p'"
 }
 keep if to_keep == 1
-drop to_keep 
 keep if ym >= "`window_start'" & ym <= "`window_end'"
 
-* ------------------------------------------
-* 步骤 3: 生成变量与固定效应
-* ------------------------------------------
 gen treated = (province == "`target_prov'")
 gen post = (ym >= "`event_month'")
 gen did = treated * post
 
-encode charstation_name, gen(station_id)
-gen date_num = date(date, "YMD")
-egen station_hour_fe = group(station_id hour)
-egen date_hour_fe = group(date_num hour)
+preserve
+keep if post == 0
+gen plot_var = treated
+reghdfe hourly_kwh c.plot_var#i.hour, absorb(date_hour_fe) vce(cluster station_id)
+est store pre_model
+restore
 
-* ==========================================
-* 第一部分：主回归 —— 24 小时逐时效应图
-* ==========================================
-reghdfe hourly_kwh c.did#i.hour, absorb(station_hour_fe date_hour_fe) vce(cluster station_id)
+preserve
+keep if post == 1
+gen plot_var = treated
+reghdfe hourly_kwh c.plot_var#i.hour, absorb(date_hour_fe) vce(cluster station_id)
+est store post_model
+restore
 
-* 准备 xlabel 宏
-local xlab_str ""
-forvalues i = 0/23 {
-    local label_id = `i' + 1
-    local xlab_str "`xlab_str' `label_id' "`i'" "
-}
+preserve
+gen plot_var = did
+reghdfe hourly_kwh c.plot_var#i.hour, absorb(station_hour_fe date_hour_fe) vce(cluster station_id)
+est store did_model
+restore
 
-* ==========================================
-* 核心绘图：湖北版 (标签横置 + 精准贴边)
-* ==========================================
+* ------------------------------------------
+* 湖北省核心绘图
+* ------------------------------------------
 #delimit ;
-coefplot, 
-    keep(*.hour#c.did) 
+coefplot 
+    (pre_model, 
+        offset(0.35)  
+        label("Pre-policy Gap") 
+        recast(connected) lcolor(ebblue%70) mcolor(ebblue%70) msymbol(Oh) lpattern(dash)
+        ciopts(recast(rspike) color(ebblue%40) lwidth(thin)) )
+        
+    (post_model, 
+        offset(0.65)  
+        label("Post-policy Gap") 
+        recast(connected) lcolor(cranberry%70) mcolor(cranberry%70) msymbol(Th) lpattern(dash)
+        ciopts(recast(rspike) color(cranberry%40) lwidth(thin)) )
+        
+    (did_model, 
+        offset(0.5)   
+        label("Treatment Effect (DiD)") 
+        recast(connected) lcolor(black) mcolor(black) lwidth(medthick) msymbol(O)
+        ciopts(recast(rspike) color(gs6) lwidth(medthick)) ),
+        
+    keep(*.hour#c.plot_var) 
     vertical 
-    recast(connected) 
-    lcolor(gs4) mcolor(gs4) lwidth(medthick)
-    ciopts(recast(rcap) color(gs10))
     
     title("Hubei: Evaluation of TOU change (May 2024 Policy)")
-    ytitle("Treatment Effect on Charging Load (kWh)")
+    ytitle("Difference / Treatment Effect (kWh)")
     xtitle("Hour of Day")
     graphregion(color(white))
-    plotregion(margin(t=0 b=0)) /* 消除上下多余的默认留白 */
+    plotregion(margin(t=0 b=0))
+	xsize(5.5) ysize(4.5)
     
     yline(0, lcolor(black) lpattern(solid) lwidth(medthick))
     
-    /* 湖北 Y 轴：严格 -300 到 200，步长 100，标签横向显示 */
-    yscale(range(-300 200)) 
-    ylabel(-300(100)200, angle(0) nogrid)
+    yscale(range(-300 500)) 
+    ylabel(-300(100)500, angle(0) nogrid)
     
+    xscale(range(1 25))
     xlabel(`xlab_str', nogrid)
-    legend(off)
+    legend(pos(6) cols(3) region(lwidth(none) fcolor(none)))
+    
+    /* 分隔虚线 */
+    xline(13 15 19 24, lcolor(gs10) lpattern(shortdash) lwidth(thin))
+    
+    /* -------------------------------------------------------------
+       【核心修复】：使用 orientation(vertical) 强制竖排
+       ------------------------------------------------------------- */
+    text(380 7.5 "Valley->Shoulder", size(vsmall) color(cranberry) orientation(vertical))
+    text(380 11.5 "Peak->Shoulder", size(vsmall) color(ebblue) orientation(vertical))
+    text(380 14 "Peak->Valley", size(vsmall) color(ebblue) orientation(vertical))
+    text(380 15.5 "Peak->Shoulder", size(vsmall) color(ebblue) orientation(vertical))
+    text(380 18 "Shoulder->Peak", size(vsmall) color(cranberry) orientation(vertical))
+    text(380 20 "Shoulder->Super-peak", size(vsmall) color(cranberry) orientation(vertical))
+    text(380 22 "Super-peak->Peak", size(vsmall) color(ebblue) orientation(vertical))
+    text(380 23.5 "Shoulder->Peak", size(vsmall) color(cranberry) orientation(vertical))
+    text(380 24.5 "Valley->Peak", size(vsmall) color(cranberry) orientation(vertical))
     
     addplot(
-        /* 阴影 Y 坐标严格匹配 Y 轴极值：-300 和 200 */
-        (scatteri -300 13 -300 15 200 15 200 13, recast(area) fcolor("103 169 207%25") lwidth(none)) 
-        (scatteri -300 24 -300 25 200 25 200 24, recast(area) fcolor("239 138 98%25") lwidth(none)) 
+        (scatteri -300 7 -300 8 500 8 500 7, recast(area) fcolor("239 138 98%15") lwidth(none)) 
+        (scatteri -300 10 -300 16 500 16 500 10, recast(area) fcolor("103 169 207%15") lwidth(none)) 
+        (scatteri -300 17 -300 21 500 21 500 17, recast(area) fcolor("239 138 98%15") lwidth(none)) 
+        (scatteri -300 21 -300 23 500 23 500 21, recast(area) fcolor("103 169 207%15") lwidth(none)) 
+        (scatteri -300 23 -300 25 500 25 500 23, recast(area) fcolor("239 138 98%15") lwidth(none)) 
     )
 ;
 #delimit cr
+graph export "Hubei_TOU_Evaluation_Final.pdf", as(pdf) replace
 
-graph export "Hubei_TOU_Evaluation.pdf", as(pdf) replace
 
-
-* ==========================================
-* 模块化实证：四川省 (2023-06 极简平移版，忽略尖峰干扰)
-* ==========================================
-clear all
-import delimited "D:\Data_cxb\电动汽车充电订单数据\did_panel_station_hourly.csv", clear
+* ==============================================================================
+* 模块二：四川省 (2023-06 政策变更)
+* ==============================================================================
+disp ">>> 开始处理四川省数据..."
+use `fulldata', clear
 
 local target_prov "四川省"
 local event_month "2023-06"
 local window_start "2023-03"  
 local window_end   "2023-09"  
-
-* ------------------------------------------
-* 步骤 2 & 3: 数据准备与变量生成
-* ------------------------------------------
 local control_pool "江苏省 上海市 广东省 山东省 河北省 天津市 山西省 海南省 陕西省 甘肃省 青海省 宁夏回族自治区 新疆维吾尔自治区 西藏自治区 辽宁省 吉林省 黑龙江省 内蒙古自治区 重庆市"
+
 gen to_keep = 0
 replace to_keep = 1 if province == "`target_prov'"
 foreach p of local control_pool {
     replace to_keep = 1 if province == "`p'"
 }
 keep if to_keep == 1
-drop to_keep 
 keep if ym >= "`window_start'" & ym <= "`window_end'"
 
 gen treated = (province == "`target_prov'")
 gen post = (ym >= "`event_month'")
 gen did = treated * post
 
-encode charstation_name, gen(station_id)
-gen date_num = date(date, "YMD")
-egen station_hour_fe = group(station_id hour)
-egen date_hour_fe = group(date_num hour)
+preserve
+keep if post == 0
+gen plot_var = treated
+reghdfe hourly_kwh c.plot_var#i.hour, absorb(date_hour_fe) vce(cluster station_id)
+est store pre_model
+restore
 
-* ==========================================
-* 第一部分：主回归与绘图
-* ==========================================
-reghdfe hourly_kwh c.did#i.hour, absorb(station_hour_fe date_hour_fe) vce(cluster station_id)
+preserve
+keep if post == 1
+gen plot_var = treated
+reghdfe hourly_kwh c.plot_var#i.hour, absorb(date_hour_fe) vce(cluster station_id)
+est store post_model
+restore
 
-local xlab_str ""
-forvalues i = 0/23 {
-    local label_id = `i' + 1
-    local xlab_str "`xlab_str' `label_id' "`i'" "
-}
+preserve
+gen plot_var = did
+reghdfe hourly_kwh c.plot_var#i.hour, absorb(station_hour_fe date_hour_fe) vce(cluster station_id)
+est store did_model
+restore
 
-* ==========================================
-* 核心绘图：四川版 (标签横置 + 精准贴边)
-* ==========================================
+* ------------------------------------------
+* 四川省核心绘图
+* ------------------------------------------
 #delimit ;
-coefplot, 
-    keep(*.hour#c.did) 
+coefplot 
+    (pre_model, 
+        offset(0.35)
+        label("Pre-policy Gap") 
+        recast(connected) lcolor(ebblue%70) mcolor(ebblue%70) msymbol(Oh) lpattern(dash)
+        ciopts(recast(rspike) color(ebblue%40) lwidth(thin)) )
+        
+    (post_model, 
+        offset(0.65)
+        label("Post-policy Gap") 
+        recast(connected) lcolor(cranberry%70) mcolor(cranberry%70) msymbol(Th) lpattern(dash)
+        ciopts(recast(rspike) color(cranberry%40) lwidth(thin)) )
+        
+    (did_model, 
+        offset(0.5)
+        label("Treatment Effect (DiD)") 
+        recast(connected) lcolor(black) mcolor(black) lwidth(medthick) msymbol(O)
+        ciopts(recast(rspike) color(gs6) lwidth(medthick)) ),
+        
+    keep(*.hour#c.plot_var) 
     vertical 
-    recast(connected) 
-    lcolor(gs4) mcolor(gs4) lwidth(medthick)
-    ciopts(recast(rcap) color(gs10))
     
     title("Sichuan: Evaluation of TOU change (June 2023 Policy)")
-    ytitle("Treatment Effect on Charging Load (kWh)")
+    ytitle("Difference / Treatment Effect (kWh)")
     xtitle("Hour of Day")
     graphregion(color(white))
-    plotregion(margin(t=0 b=0)) /* 消除上下多余的默认留白 */
+    plotregion(margin(t=0 b=0))
+	xsize(5.5) ysize(4.5)
     
     yline(0, lcolor(black) lpattern(solid) lwidth(medthick))
     
-    /* 四川 Y 轴：严格 -60 到 60，步长 20，标签横向显示 */
-    /* (注：你的数据极值在40左右，用 -60 到 60 视觉张力最好) */
-    yscale(range(-40 120)) 
-    ylabel(-40(40)120, angle(0) nogrid)
+    yscale(range(-100 300)) 
+    ylabel(-100(50)300, angle(0) nogrid)
     
+    xscale(range(1 25))
     xlabel(`xlab_str', nogrid)
-    legend(off)
+    legend(pos(6) cols(3) region(lwidth(none) fcolor(none)))
+    
+    /* 区分 15-16 与 16-18 */
+    
+    /* -------------------------------------------------------------
+       【核心修复】：使用 orientation(vertical) 强制竖排
+       ------------------------------------------------------------- */
+    text(220 11.5 "Shoulder->Peak", size(vsmall) color(cranberry) orientation(vertical))
+    text(220 15.5 "Peak->Shoulder", size(vsmall) color(ebblue) orientation(vertical))
     
     addplot(
-        /* 阴影 Y 坐标严格匹配 Y 轴极值：-60 和 60 */
-        (scatteri -40 11 -40 12 120 12 120 11, recast(area) fcolor("239 138 98%20") lwidth(none)) 
-        (scatteri -40 15 -40 16 120 16 120 15, recast(area) fcolor("103 169 207%20") lwidth(none)) 
+        (scatteri -100 11 -100 12 300 12 300 11, recast(area) fcolor("239 138 98%15") lwidth(none)) 
+        (scatteri -100 15 -100 16 300 16 300 15, recast(area) fcolor("103 169 207%15") lwidth(none)) 
     )
 ;
 #delimit cr
+graph export "Sichuan_TOU_Evaluation_Final.pdf", as(pdf) replace
 
-graph export "Sichuan_TOU_Evaluation.pdf", as(pdf) replace
+disp ">>> 全部任务执行完毕！请查收您的顶级图表。"
