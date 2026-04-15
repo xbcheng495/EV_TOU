@@ -1,12 +1,8 @@
-* ==============================================================================
-* 电动汽车充电行为 TOU 政策评估实证代码整合版 (湖北 & 四川)
-* 终极修复版：修正文本竖排参数 (orientation(vertical)) + 国际标准术语
-* ==============================================================================
 clear all
 set more off
 
 disp ">>> 正在读取原始 CSV 数据，请稍候..."
-import delimited "D:\Data_cxb\电动汽车充电订单数据\did_panel_station_hourly.csv", clear
+import delimited "D:\did_panel_station_hourly.csv", clear
 
 encode charstation_name, gen(station_id)
 gen date_num = date(date, "YMD")
