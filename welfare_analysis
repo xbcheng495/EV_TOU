@@ -1,0 +1,448 @@
+* =========================================================================
+* 顶级实证主脚本：多维隐性摩擦成本量化与反事实福利结构分析 (English Version)
+* =========================================================================
+clear all
+set more off
+
+* 【全局设置】修改图表字体为顶级期刊标准 Times New Roman
+graph set window fontface "Times New Roman"
+graph set eps fontface "Times New Roman"
+graph set print fontface "Times New Roman"
+
+* ---------------------------------------------------------
+* 步骤 1：激活回归系数与加载主数据集
+* ---------------------------------------------------------
+display "📂 Loading Panel Data and PPML Coefficients..."
+use "D:\1-研究数据\EV充电\Panel_Ready_for_Predict.dta", clear
+quietly estimates use "D:\1-研究数据\EV充电\Unified_PPML_Hetero_Advanced.ster"
+
+* ---------------------------------------------------------
+* 步骤 2：还原订单专属价格弹性 (curr_elas) [全局只算一次，极致提速]
+* ---------------------------------------------------------
+display "🧮 Calculating specific elasticities..."
+capture drop curr_elas
+gen curr_elas = _b[ln_price] + _b[c.ln_price#c.begin_soc] * begin_soc
+
+* 叠加快充与空间异质性弹性
+capture replace curr_elas = curr_elas + _b[1.is_fast_charge#c.ln_price] if is_fast_charge == 1
+capture replace curr_elas = curr_elas + _b[1.zone_id#c.ln_price] if zone_id == 1
+capture replace curr_elas = curr_elas + _b[2.zone_id#c.ln_price] if zone_id == 2
+capture replace curr_elas = curr_elas + _b[3.zone_id#c.ln_price] if zone_id == 3
+capture replace curr_elas = curr_elas + _b[4.zone_id#c.ln_price] if zone_id == 4
+
+
+* =========================================================
+* 模块 A：设定作息基准并计算【时间摩擦成本】绘图
+* =========================================================
+display "⏱️ [Module A] Calculating Time Friction Costs..."
+
+capture drop base_price_12 base_fe_12 implied_price_time time_cost
+bysort id begin_time: egen base_price_12 = max(cond(alt_index == 24, expected_price, .))
+bysort id begin_time: egen base_fe_12 = max(cond(alt_index == 24, FE_prov_time, .))
+
+gen implied_price_time = base_price_12 * exp( (base_fe_12 - FE_prov_time) / curr_elas )
+gen time_cost = base_price_12 - implied_price_time
+
+* 处理极端离群值 
+quietly sum time_cost, detail
+local p1_time = r(p1)
+local p99_time = r(p99)
+replace time_cost = . if time_cost < `p1_time' | time_cost > `p99_time'
+
+* --- 开辟侧枝：降维绘制时间成本图 ---
+preserve
+display "   -> Extracting and plotting Time Cost..."
+keep alt_index province time_cost
+drop if missing(time_cost)
+
+* 提取全国均值与置信区间
+collapse (mean) prov_mean = time_cost, by(alt_index province)
+collapse (mean) mean_nat = prov_mean (sd) sd_prov = prov_mean (count) n_prov = prov_mean, by(alt_index)
+gen ci_upper = mean_nat + 1.96 * (sd_prov / sqrt(n_prov))
+gen ci_lower = mean_nat - 1.96 * (sd_prov / sqrt(n_prov))
+tempfile national_data
+save `national_data'
+
+* 恢复侧枝初始状态，提取重点省份
+restore 
+preserve
+keep if inlist(province, "北京市", "浙江省", "广东省", "四川省", "陕西省", "湖北省")
+drop if missing(time_cost)
+collapse (mean) mean_prov = time_cost, by(alt_index province)
+reshape wide mean_prov, i(alt_index) j(province) string
+
+rename mean_prov北京市 cost_bj
+rename mean_prov浙江省 cost_zj
+rename mean_prov广东省 cost_gd
+rename mean_prov四川省 cost_sc
+rename mean_prov陕西省 cost_sn
+rename mean_prov湖北省 cost_hb
+
+merge 1:1 alt_index using `national_data', nogenerate
+sort alt_index
+
+#delimit ;
+quietly twoway 
+    (rarea ci_upper ci_lower alt_index, fcolor(gs12) lcolor(gs12))
+    (line cost_bj alt_index, lcolor(red%40) lwidth(medthin))
+    (line cost_zj alt_index, lcolor(blue%40) lwidth(medthin))
+    (line cost_gd alt_index, lcolor(green%40) lwidth(medthin))
+    (line cost_sc alt_index, lcolor(orange%40) lwidth(medthin))
+    (line cost_sn alt_index, lcolor(purple%40) lwidth(medthin))
+    (line cost_hb alt_index, lcolor(cyan%40) lwidth(medthin))
+    (connected mean_nat alt_index, lcolor(maroon) mcolor(maroon) lwidth(thick) msymbol(O) msize(small))
+    ,
+    title("National Average Time Friction Cost and Spatial Heterogeneity", size(medium) color(black)) 
+    subtitle("Benchmark: 12:00 (Cost set to 0)", size(small) color(gs5)) 
+    ytitle("Time Inconvenience Cost (CNY/kWh)", size(small)) 
+    xtitle("Time", size(small)) 
+    yline(0, lcolor(black) lpattern(dash) lwidth(medthin)) 
+    xline(24, lcolor(gs10) lpattern(dot) lwidth(medthin)) 
+    xlabel(0 "0:00" 4 "2:00" 8 "4:00" 12 "6:00" 16 "8:00" 20 "10:00" 24 "12:00" 28 "14:00" 32 "16:00" 36 "18:00" 40 "20:00" 44 "22:00" 48 "24:00", labsize(small)) 
+    ylabel(, labsize(small) format(%9.2f) nogrid) 
+    legend(order(8 "National Avg." 1 "95% CI (Inter-prov.)" 2 "Beijing" 3 "Zhejiang" 4 "Guangdong" 5 "Sichuan" 6 "Shaanxi" 7 "Hubei") 
+           ring(0) position(2) cols(2) size(vsmall) region(lwidth(none) fcolor(white%70)))
+    graphregion(color(white)) bgcolor(white) plotregion(margin(t=2 b=2))
+;
+#delimit cr
+graph export "D:\1-研究数据\EV充电\Master_Time_Cost_Curve_95CI_EN.pdf", replace as(pdf)
+restore
+
+
+* =========================================================
+* 模块 B：设定气温基准并计算【气温适应成本】绘图
+* =========================================================
+display "🌡️ [Module B] Calculating Temperature Adaptation Costs..."
+
+preserve
+keep alt_index temp_bin FE_temp_time expected_price
+collapse (mean) base_fe = FE_temp_time base_price = expected_price, by(alt_index temp_bin)
+keep if temp_bin == 6
+drop temp_bin
+tempfile base_temp
+save `base_temp'
+restore
+
+merge m:1 alt_index using `base_temp', keep(match master) nogenerate
+
+capture drop temp_cost
+gen temp_cost = base_price - base_price * exp( (base_fe - FE_temp_time) / curr_elas )
+
+* 处理极端离群值 
+quietly sum temp_cost, detail
+local p1_temp = r(p1)
+local p99_temp = r(p99)
+replace temp_cost = . if temp_cost < `p1_temp' | temp_cost > `p99_temp'
+
+* --- 开辟侧枝：降维绘制气温成本图 ---
+preserve
+display "   -> Extracting and plotting Temperature Cost..."
+keep temp_bin alt_index temp_cost
+drop if missing(temp_cost)
+
+collapse (mean) mean_cost = temp_cost, by(temp_bin alt_index)
+
+* 【🚨 核心修复】：使用临时文件代替嵌套的 preserve
+tempfile collapsed_temp_data
+quietly save `collapsed_temp_data', replace
+
+* 提取 6 个特征时间的背景曲线
+keep if inlist(alt_index, 0, 8, 16, 24, 32, 40)
+reshape wide mean_cost, i(temp_bin) j(alt_index)
+rename mean_cost0 cost_0
+rename mean_cost8 cost_4
+rename mean_cost16 cost_8
+rename mean_cost24 cost_12
+rename mean_cost32 cost_16
+rename mean_cost40 cost_20
+tempfile specific_times
+quietly save `specific_times', replace
+
+* 重新加载刚才存好的中间数据，继续算全天平均
+use `collapsed_temp_data', clear
+
+collapse (mean) mean_nat = mean_cost (sd) sd_time = mean_cost, by(temp_bin)
+gen ci_upper = mean_nat + 1.96 * sd_time
+gen ci_lower = mean_nat - 1.96 * sd_time
+
+merge 1:1 temp_bin using `specific_times', nogenerate
+sort temp_bin
+
+#delimit ;
+quietly twoway 
+    (rarea ci_upper ci_lower temp_bin, fcolor(gs12%50) lcolor(gs12%50))
+    (line cost_0 temp_bin, lcolor(red%40) lwidth(medthin))
+    (line cost_4 temp_bin, lcolor(blue%40) lwidth(medthin))
+    (line cost_8 temp_bin, lcolor(green%40) lwidth(medthin))
+    (line cost_12 temp_bin, lcolor(orange%40) lwidth(medthin))
+    (line cost_16 temp_bin, lcolor(purple%40) lwidth(medthin))
+    (line cost_20 temp_bin, lcolor(cyan%40) lwidth(medthin))
+    (connected mean_nat temp_bin, lcolor(maroon) mcolor(maroon) lwidth(thick) msymbol(O) msize(small))
+    ,
+    title("Temperature Adaptation Cost and Temporal Heterogeneity", size(medium) color(black)) 
+    subtitle("Benchmark: 20-25°C (Cost set to 0)", size(small) color(gs5)) 
+    ytitle("Temp Inconvenience Cost (CNY/kWh)", size(small)) 
+    xtitle("Temperature Range", size(small)) 
+    yline(0, lcolor(black) lpattern(dash) lwidth(medthin)) 
+    xline(6, lcolor(gs10) lpattern(dot) lwidth(medthin)) 
+    xlabel(1 "<0°C" 2 "0-5°C" 3 "5-10°C" 4 "10-15°C" 5 "15-20°C" 6 "20-25°C" 7 "25-30°C" 8 ">30°C", labsize(small) angle(30)) 
+    ylabel(, labsize(small) format(%9.2f) nogrid) 
+    legend(order(8 "Daily Avg." 1 "95% Temporal Range" 2 "0:00" 3 "4:00" 4 "8:00" 5 "12:00" 6 "16:00" 7 "20:00") 
+           ring(0) position(2) cols(2) size(vsmall) region(lwidth(none) fcolor(white%70)))
+    graphregion(color(white)) bgcolor(white) plotregion(margin(t=2 b=2))
+;
+#delimit cr
+graph export "D:\1-研究数据\EV充电\Temperature_Cost_Curve_EN.pdf", replace as(pdf)
+restore
+
+* =========================================================
+* 模块 C：反事实模拟与福利效应 (Consumer Surplus) 终极计算
+* =========================================================
+display "🔮 [Module C] Simulating Counterfactual Prices and Calculating Welfare..."
+
+* 强制重新唤醒模型记忆以防万一
+quietly estimates use "D:\1-研究数据\EV充电\Unified_PPML_Hetero_Advanced.ster"
+
+* 1. 计算每个站点的收益中性单一电价
+capture drop actual_revenue actual_demand station_revenue station_demand flat_p_local
+gen actual_revenue = ele_amount * expected_price if choice == 1
+gen actual_demand = ele_amount if choice == 1
+bysort charstation_name: egen station_revenue = sum(actual_revenue)
+bysort charstation_name: egen station_demand = sum(actual_demand)
+gen flat_p_local = station_revenue / station_demand
+
+* 2. 预测现行 TOU 政策下的负荷
+display "   -> Predicting expected load under TOU..."
+capture drop expected_kwh_tou
+quietly predict expected_kwh_tou, mu
+
+* 3. 预测反事实单一电价 (Flat Price) 下的负荷
+display "   -> Predicting expected load under Flat Rate..."
+capture drop ln_price_backup expected_kwh_flat
+gen ln_price_backup = ln_price
+replace ln_price = ln(flat_p_local) 
+quietly predict expected_kwh_flat, mu
+replace ln_price = ln_price_backup
+
+* ---------------------------------------------------------
+* 4. 消费者剩余 (CS) 计算：期望 vs 实际
+* ---------------------------------------------------------
+display "💰 Calculating Welfare (Consumer Surplus)..."
+
+* [4.1] 事前期望剩余 (用于评价政策红利，单行时段级)
+capture drop exp_CS_tou exp_CS_flat Delta_CS
+gen exp_CS_tou = - (expected_price * expected_kwh_tou) / (1 + curr_elas)
+gen exp_CS_flat = - (flat_p_local * expected_kwh_flat) / (1 + curr_elas)
+capture drop Delta_CS
+gen Delta_CS = exp_CS_tou - exp_CS_flat
+
+* [4.2] 事后实际剩余 (真实发生福利，不用于政策比较，仅供差异分析)
+capture drop actual_CS_tou
+gen actual_CS_tou = - (expected_price * actual_kwh) / (1 + curr_elas) if choice == 1
+
+* ---------------------------------------------------------
+* 5. 订单级 (Session-level) 汇总与特质偏差分析
+* ---------------------------------------------------------
+capture drop total_Delta_CS total_exp_CS_tou diff_CS abs_diff_CS pct_diff_CS
+
+* [5.1] 【核心修复】：把 48 行的期望福利和期望变动加起来
+bysort id: egen total_Delta_CS = sum(Delta_CS)
+bysort id: egen total_exp_CS_tou = sum(exp_CS_tou)
+
+* [5.2] 实际剩余 vs 期望剩余的偏差幅度分析 (仅在 choice == 1 的真实发生行比对)
+gen diff_CS = actual_CS_tou - total_exp_CS_tou if choice == 1
+gen abs_diff_CS = abs(diff_CS) if choice == 1
+gen pct_diff_CS = (abs_diff_CS / abs(total_exp_CS_tou)) * 100 if choice == 1
+
+* ---------------------------------------------------------
+* 6. 综合福利统计与打印表
+* ---------------------------------------------------------
+preserve
+* 仅保留真实选择的那一行进行展示，保证每个订单 (id) 只被统计一次
+keep if choice == 1
+
+display " "
+display "**********************************************************************"
+display "📊 [基础统计] 现行分时电价下的单均消费者剩余对比 (Actual vs Expected)"
+display "**********************************************************************"
+display " - actual_CS_tou : 事后实际发生的绝对福利 (元/单)"
+display " - total_exp_CS  : 包含 48 个时段期权价值的期望总福利 (元/单)"
+display " - diff_CS       : 实际剩余减去期望剩余的净差额 (元)"
+display " - abs_diff_CS   : 绝对偏离幅度 (无论正负，平均偏离了多少元)"
+display " - pct_diff_CS   : 相对偏离百分比 (%)"
+display "----------------------------------------------------------------------"
+tabstat actual_CS_tou total_exp_CS_tou diff_CS abs_diff_CS pct_diff_CS, ///
+        stat(mean p50 sd min max) format(%15.2f) columns(variables)
+
+display " "
+display "========================================================="
+display "🔍 [政策评估] 期望福利净变动 (TOU相比于单一电价，元/单)"
+display "   负值代表分时电价剥夺了消费者的福利"
+display "========================================================="
+display " >>> 异质性一：按功能区 (Functional Zone)"
+tabstat total_Delta_CS, by(dominant_zone_corrected) stat(mean n) format(%15.2f)
+
+display " "
+display " >>> 异质性二：按充电类型 (Fast vs Slow Charger)"
+tabstat total_Delta_CS, by(is_fast_charge) stat(mean n) format(%15.2f)
+restore
+
+* ---------------------------------------------------------
+* 保存终极福利分析数据集
+* ---------------------------------------------------------
+display "💾 Saving the final advanced welfare dataset..."
+save "D:\1-研究数据\EV充电\Panel_Welfare_Final_Advanced.dta", replace
+
+display "🎉 Mission Accomplished! 全部图表已输出，结构性福利测算与偏差分析顺利完成！"
+
+* =========================================================
+* 附加模块：社会福利变动的结构性分解 (按电价时段 & 按时间)
+* =========================================================
+display "🧩 Decomposing Welfare Impact by Tariff Period and Time of Day..."
+
+* ---------------------------------------------------------
+* 1. 测算"尖、峰、平、谷"对单均福利变动的绝对贡献
+* ---------------------------------------------------------
+capture drop cs_jian cs_feng cs_ping cs_gu
+
+* 使用 cond() 函数条件求和，完美拆解每个订单的总福利
+bysort id: egen cs_jian = sum(cond(alt_status == "尖", Delta_CS, 0))
+bysort id: egen cs_feng = sum(cond(alt_status == "峰", Delta_CS, 0))
+bysort id: egen cs_ping = sum(cond(alt_status == "平", Delta_CS, 0))
+bysort id: egen cs_gu   = sum(cond(alt_status == "谷", Delta_CS, 0))
+
+preserve
+* 去重，确保每个订单只展示一次
+keep if choice == 1
+display " "
+display "======================================================================"
+display "📊 结构性分解：尖、峰、平、谷 时段的单均期望福利变动贡献 (元/单)"
+display "   (注：四者相加严格等于 total_Delta_CS。正值代表红利，负值代表剥夺)"
+display "======================================================================"
+* 打印 Mean(单均贡献) 和 Sum(样本总社会贡献)
+tabstat cs_jian cs_feng cs_ping cs_gu total_Delta_CS, stat(mean sum) format(%15.3f) columns(variables)
+restore
+
+* ---------------------------------------------------------
+* 2. 绘制日内 48 个时段的期望福利变动贡献分布图 (极速瘦身版)
+* ---------------------------------------------------------
+preserve
+display "   -> Plotting Welfare Decomposition across 24 hours..."
+
+* 【🚨 核心降维修复】：只保留画图需要的两个变量，瞬间释放几十GB的运算空间！
+keep alt_index Delta_CS
+drop if missing(Delta_CS)
+
+* 计算每个时段在全体样本中的平均期望福利变动
+collapse (mean) mean_delta_cs = Delta_CS, by(alt_index)
+
+#delimit ;
+quietly twoway 
+    /* 将正负福利变动用不同颜色区分：正福利（赚了）用绿色，负福利（亏了）用红色 */
+    (bar mean_delta_cs alt_index if mean_delta_cs >= 0, fcolor(green%70) lcolor(green%70) lwidth(none))
+    (bar mean_delta_cs alt_index if mean_delta_cs < 0, fcolor(red%70) lcolor(red%70) lwidth(none))
+    ,
+    title("Decomposition of Expected Welfare Change Across 24 Hours", size(medium) color(black)) 
+    subtitle("Average Contribution per Time Slot vs. Flat Rate", size(small) color(gs5)) 
+    ytitle("Expected Welfare Change Contribution (CNY)", size(small)) 
+    xtitle("Time of Day", size(small)) 
+    yline(0, lcolor(black) lpattern(solid) lwidth(medthin)) 
+    xline(24, lcolor(gs10) lpattern(dot) lwidth(medthin)) 
+    xlabel(0 "0:00" 8 "4:00" 16 "8:00" 24 "12:00" 32 "16:00" 40 "20:00" 48 "24:00", labsize(small)) 
+    ylabel(, labsize(small) format(%9.3f) nogrid)
+    legend(order(1 "Welfare Gain (Positive Shift)" 2 "Welfare Loss (Negative Shift)") 
+           ring(0) position(1) size(vsmall) region(lwidth(none) fcolor(white%70)))
+    graphregion(color(white)) bgcolor(white) plotregion(margin(t=2 b=2))
+;
+#delimit cr
+
+* 导出高清图表
+graph export "D:\1-研究数据\EV充电\Welfare_Decomposition_By_Time_EN.pdf", replace as(pdf)
+restore
+
+* =========================================================
+* 附加模块：基于【实际起充时间】的订单总福利变动分布
+* =========================================================
+display "🧩 Analyzing Total Session Welfare Impact by Actual Charge Start Time..."
+
+preserve
+* 【核心逻辑 1】：只保留真实发生充电的那一行，这代表了车主真实的起充时间
+keep if choice == 1
+drop if missing(total_Delta_CS)
+
+* 【核心逻辑 2】：计算在每个时间段"真实起充"的订单，其平均的总福利变动 (total_Delta_CS)
+collapse (mean) mean_actual_welfare = total_Delta_CS, by(alt_index)
+
+display "   -> Plotting Actual Charge Time Welfare Impact..."
+
+#delimit ;
+quietly twoway 
+    /* 依然使用红绿双色：绿色代表在这个时段充电的人总体赚了，红色代表亏了 */
+    (bar mean_actual_welfare alt_index if mean_actual_welfare >= 0, fcolor(green%70) lcolor(green%70) lwidth(none))
+    (bar mean_actual_welfare alt_index if mean_actual_welfare < 0, fcolor(red%70) lcolor(red%70) lwidth(none))
+    ,
+    /* 标题说明这是"订单总福利"按"实际充电时间"的分布 */
+    title("Total Session Welfare Change by Actual Charging Time", size(medium) color(black)) 
+    subtitle("Average Total Delta CS for users charging at each time slot", size(small) color(gs5)) 
+    ytitle("Average Total Welfare Change (CNY/Session)", size(small)) 
+    xtitle("Actual Charge Start Time", size(small)) 
+    yline(0, lcolor(black) lpattern(solid) lwidth(medthin)) 
+    xline(24, lcolor(gs10) lpattern(dot) lwidth(medthin)) 
+    xlabel(0 "0:00" 8 "4:00" 16 "8:00" 24 "12:00" 32 "16:00" 40 "20:00" 48 "24:00", labsize(small)) 
+    ylabel(, labsize(small) format(%9.2f) nogrid)
+    legend(order(1 "Winners (Welfare Gain)" 2 "Losers (Welfare Loss)") 
+           ring(0) position(1) size(vsmall) region(lwidth(none) fcolor(white%70)))
+    graphregion(color(white)) bgcolor(white) plotregion(margin(t=2 b=2))
+;
+#delimit cr
+
+* 导出高清图表
+graph export "D:\1-研究数据\EV充电\Total_Welfare_By_Actual_Time_EN.pdf", replace as(pdf)
+restore
+
+* =========================================================
+* 附加模块：起始SOC与消费者剩余的关系 (里程焦虑效应)
+* =========================================================
+display "🔋 Analyzing Welfare Impact by Initial SOC (Range Anxiety)..."
+
+preserve
+* 1. 仅保留真实订单行 (保证每个订单只被计算一次)
+keep if choice == 1
+drop if missing(begin_soc) | missing(total_Delta_CS) | missing(actual_CS_tou)
+
+* 2. 将 SOC 取整 (1%)，并计算每个 SOC 刻度下的平均福利
+gen soc_bin = round(begin_soc, 1)
+
+collapse (mean) mean_delta_cs = total_Delta_CS ///
+         (mean) mean_actual_cs = actual_CS_tou ///
+         (count) n_orders = total_Delta_CS, by(soc_bin)
+
+* 剔除极小样本的极端噪点 (比如某些奇怪的电量只有不到10个订单)
+drop if n_orders < 10
+
+display "   -> Plotting Welfare impacts by SOC..."
+
+* ---------------------------------------------------------
+* 图 1：政策福利变动 (Delta CS) 与 SOC 的关系图
+* ---------------------------------------------------------
+#delimit ;
+quietly twoway 
+    /* 绘制基础散点，颜色透明度设为50%防止重叠发黑 */
+    (scatter mean_delta_cs soc_bin, mcolor(navy%50) msize(small) msymbol(O))
+    /* 添加二次项拟合曲线，看非线性趋势 */
+    (qfit mean_delta_cs soc_bin, lcolor(red) lwidth(medthick) lpattern(solid))
+    ,
+    title("Expected Welfare Change by Initial SOC", size(medium) color(black)) 
+    subtitle("Does Range Anxiety Exacerbate Welfare Loss?", size(small) color(gs5)) 
+    ytitle("Average Total Welfare Change (CNY/Session)", size(small)) 
+    xtitle("Initial State of Charge (SOC %)", size(small)) 
+    yline(0, lcolor(black) lpattern(dash) lwidth(medthin)) 
+    xlabel(0(10)100, labsize(small)) 
+    ylabel(, labsize(small) format(%9.2f) nogrid)
+    legend(order(1 "Avg. Delta CS per SOC" 2 "Quadratic Fit") 
+           ring(0) position(4) size(vsmall) region(lwidth(none) fcolor(white%70)))
+    graphregion(color(white)) bgcolor(white) plotregion(margin(t=2 b=2))
+;
+#delimit cr
+graph export "D:\1-研究数据\EV充电\Welfare_Delta_By_SOC_EN.pdf", replace as(pdf)
+restore
