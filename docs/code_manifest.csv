@@ -1,0 +1,7 @@
+script,purpose,main inputs,main outputs
+code/01_tou_tariff_rules.py,Assign TOU periods and expected prices to charging sessions,"charging_sessions.csv; tou_rules.json",charging_sessions_with_tou_prices.csv
+code/02_rdd_price_transitions.do,Estimate RDiT and Donut RD responses at price transitions,transition_panel.csv,"rdd_high_to_low.pdf; rdd_low_to_high.pdf; rdd tables"
+code/03_elasticity_ols_ppml.do,Estimate intensive-margin OLS and PPML expected-load elasticities,charging_choice_panel.dta,"elasticity_estimates.rtf; prediction_panel.dta; ppml model"
+code/04_counterfactual_flat_pricing.do,Construct revenue-neutral flat-rate counterfactual,"prediction_panel.dta; ppml model","counterfactual_predictions.dta; price curve"
+code/05_grid_renewable_emissions.do,Compute ramping shocks renewable mismatch EGA and CO2 emissions,"counterfactual_predictions.dta; renewable_hourly_profiles.csv; hourly_emission_factors.csv","grid/emission tables; load and mismatch figures"
+code/06_welfare_analysis.do,Compute welfare and time-cost decompositions,"counterfactual_predictions.dta; ppml model","welfare_decomposition.pdf; welfare tables"
