@@ -1,0 +1,36 @@
+# Restricted data and intermediate datasets
+data/*
+!data/.gitkeep
+*.dta
+*.ster
+*.csv
+*.xlsx
+*.xls
+*.mat
+
+# Generated outputs
+outputs/figures/*
+outputs/tables/*
+!outputs/figures/.gitkeep
+!outputs/tables/.gitkeep
+*.pdf
+*.png
+*.jpg
+*.gph
+*.rtf
+*.doc
+*.docx
+
+# Logs and local files
+*.log
+*.smcl
+*.tmp
+*.pyc
+__pycache__/
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Keep documentation tables
+!docs/code_manifest.csv
+
